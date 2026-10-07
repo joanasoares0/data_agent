@@ -68,7 +68,9 @@ class DatabaseUtil:
                 cursor.execute(f"""
                     SELECT column_name, data_type
                     FROM information_schema.columns
-                    WHERE table_name = '{table_name}';
+                    WHERE table_schema = '{schema_name}'
+                      AND table_name = '{table_name}'
+                    ORDER BY ordinal_position;
                 """)
                 # Rows look like: [("user_id", "integer"), ("email", "character varying"), ...]
                 columns_list = cursor.fetchall()
