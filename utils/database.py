@@ -117,8 +117,10 @@ class DatabaseUtil:
             results = cursor.fetchall()
             return str(results)
         except Exception as e:
+            # Return the error as text (not None) so the agent state stays a str
+            # and the final-answer step can explain the failure to the user.
             print(f"Error executing query: {e}")
-            return None
+            return f"Error executing query: {e}"
         finally:
             if cursor:
                 cursor.close()

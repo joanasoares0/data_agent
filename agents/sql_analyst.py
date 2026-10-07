@@ -47,9 +47,10 @@ from IPython.display import display, Image
 # ------------------------------------------------------- AI Agent code ----------------------------------------------------------------------------------
 
 # 1st node
-def curate_question(state: AgentSchema) -> AgentSchema: 
-    # We hsould always return the entire state, so that the next node can use it, to maintain the state between nodes. 
-    # This is important for the graph structure, as each node can modify the state and pass it along to the next node.
+def curate_question(state: AgentSchema) -> dict:
+    # Each node returns only the fields it changed, as a dict. LangGraph merges that into the state.
+    # Don't return the whole state: `messages` uses the `add` reducer, so returning the full list
+    # would append every existing message again (duplicates). Return just the new messages instead.
     """
     Curates a question based on the current state of the agent.
 
@@ -64,14 +65,11 @@ def curate_question(state: AgentSchema) -> AgentSchema:
     llm = pick_llm("low") #pick a low cost llm for this task, as it is not critical to have a high quality answer for this task.
     response = llm.invoke(f"Curate the following question: {user_question}").content
 
-    state.curated_question = response
-
-    state.messages = state.messages + [HumanMessage(content=response)] #append the response to the messages list, so that we can keep track of the conversation history.
-
-    return state 
+    # the add reducer appends this new message to the conversation history
+    return {"curated_question": response, "messages": [HumanMessage(content=response)]}
 
 # 2nd node
-def prompt_query_context(state: AgentSchema) -> AgentSchema:
+def prompt_query_context(state: AgentSchema) -> dict:
     """
     Generates a detailed prompt with SQL DB context that will help the agent to generate SQL query.
 
@@ -105,6 +103,7 @@ def prompt_query_context(state: AgentSchema) -> AgentSchema:
     table names, column names, data types, and sample data for each table so that 
     you can understand the structure of the database and generate an accurate SQL query.
     Unless user explicitly asks for specific number of rows, always limit the output to 10 rows.
+    All tables are in the "rideshare" schema, so always prefix table names with it (e.g. rideshare.payments).
     Just generate the SQL query without any explanation or additional text because
     this query will be executed directly on the database. So, the output should be SQL
     ready to be executed without any modifications.  
@@ -117,12 +116,10 @@ def prompt_query_context(state: AgentSchema) -> AgentSchema:
     """    
 
     # update the prompt
-    state.prompt_query_context = prompt
-
-    return state
+    return {"prompt_query_context": prompt}
 
 
-def generate_sql(state: AgentSchema) -> AgentSchema:
+def generate_sql(state: AgentSchema) -> dict:
     """
     Generates an SQL query based on the curated question and prompt query context.
 
@@ -137,13 +134,11 @@ def generate_sql(state: AgentSchema) -> AgentSchema:
     llm = pick_llm("medium") #pick a medium cost llm for this task, as it is critical to have a high quality answer for this task.
     generated_sql_query = llm.invoke(prompt).content
 
-    state.generated_sql_query = generated_sql_query
-
-    return state
+    return {"generated_sql_query": generated_sql_query}
 
 
 # Is safe node
-def is_safe_sql(state: AgentSchema) -> AgentSchema:
+def is_safe_sql(state: AgentSchema) -> dict:
     """
     Determines whether the generated SQL query is safe to execute or not.
 
@@ -171,12 +166,9 @@ def is_safe_sql(state: AgentSchema) -> AgentSchema:
 
     response = llm_judge.invoke(prompt).model_dump() # get the response as a dictionary instead of a Pydantic model instance with model dump
 
-    state.is_safe = response['is_safe']
-    state.comments = response['comments']
+    return {"is_safe": response['is_safe'], "comments": response['comments']}
 
-    return state
-
-def canceled_sql(state: AgentSchema) -> AgentSchema:
+def canceled_sql(state: AgentSchema) -> dict:
     """
     Cancels the SQL query execution if it is deemed unsafe.
 
@@ -187,13 +179,11 @@ def canceled_sql(state: AgentSchema) -> AgentSchema:
     """
 
     comments = state.comments
-    state.final_answer = f"SQL query execution has been canceled due to safety concerns. Comments from the judge: {comments}"
+    final_answer = f"SQL query execution has been canceled due to safety concerns. Comments from the judge: {comments}"
 
-    state.messages = state.messages + [AIMessage(content=state.final_answer)]
+    return {"final_answer": final_answer, "messages": [AIMessage(content=final_answer)]}
 
-    return state
-
-def execute_sql(state: AgentSchema) -> AgentSchema:
+def execute_sql(state: AgentSchema) -> dict:
     """
     Executes the generated SQL query against the database.
 
@@ -211,17 +201,18 @@ def execute_sql(state: AgentSchema) -> AgentSchema:
         "database": os.environ['POSTGRES_DB'],
         "user": os.environ['POSTGRES_USER'],
         "password": os.environ['POSTGRES_PASSWORD'],
+        # The tables live in the rideshare schema, not public. Setting search_path makes
+        # unqualified names like "FROM payments" resolve to rideshare.payments.
+        "options": "-c search_path=rideshare,public",
     }
-    
+
     obj = DatabaseUtil(connection_details)
 
     execution_result = obj.execute_query(sql_query)
 
-    state.sql_query_execution_result = execution_result
+    return {"sql_query_execution_result": execution_result}
 
-    return state
-
-def represent_final_answer(state: AgentSchema) -> AgentSchema:
+def represent_final_answer(state: AgentSchema) -> dict:
     """
     Generates the final answer based on the SQL query execution result and the curated question.
 
@@ -250,11 +241,7 @@ def represent_final_answer(state: AgentSchema) -> AgentSchema:
 
     llm_response = llm.invoke(prompt).content
 
-    state.final_answer = llm_response
-
-    state.messages = state.messages + [AIMessage(content=llm_response)] 
-
-    return state
+    return {"final_answer": llm_response, "messages": [AIMessage(content=llm_response)]}
 
 
 # create edges and nodes for the graph, where each node is a function and each edge is a call between functions.
@@ -307,7 +294,7 @@ if __name__ == "__main__":
         "user_input": "What are the different types of payment methods we have in our database?",
         "curated_question": "",
         "prompt_query_context": "",
-        "is_safe": "",
+        "is_safe": "No",
         "comments": "",
         "generated_sql_query": "",
         "sql_query_execution_result": "",
@@ -316,4 +303,5 @@ if __name__ == "__main__":
 
     # execute graph 
     sql_analyst_response = sql_analyst.invoke(input_schema)
+    print("Final Answer: ", sql_analyst_response['final_answer'])
 
