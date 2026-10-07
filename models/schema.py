@@ -7,8 +7,9 @@ class AgentSchema(BaseModel):
     # with annotated langchain or langgraph will do it automatically
     messages : Annotated[list, add] = Field(..., description="List of messages to be processed by the agent")
 
-    # we could also add user input to messages, but we can keep it separate the fresh user input
-    #user_input: Annotated[str, add] = Field(..., description="User input to be processed by the agent")
+    # we could also add user input to messages or we can keep it separate
+    # have a fresh user input separated to make things easier to track and debug, and also to make it easier to add the user input to the messages list in a controlled way.
+    user_input: str = Field(..., description="Original uer input asked by the user.")
 
     curated_question : str = Field(..., description="Curated user question")
 
