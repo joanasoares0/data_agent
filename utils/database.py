@@ -42,17 +42,17 @@ class DatabaseUtil:
 
     def schema_details(self, schema_name):
         """Return a text description of every table and column in `schema_name`."""
+        
+        schema_info_context = ""
+        
+        # A cursor is the object that sends SQL to the database and holds the results.
+        connection = self.connection
+        cursor = connection.cursor()
+
+        # Header line of the description.
+        schema_info_context = f"Database Schema: {schema_name}\n"
 
         try:
-            schema_info_context = ""
-
-            # A cursor is the object that sends SQL to the database and holds the results.
-            connection = self.connection
-            cursor = connection.cursor()
-
-            # Header line of the description.
-            schema_info_context = f"Database Schema: {schema_name}\n"
-
             # 1) List the tables in the schema.
             # information_schema is a set of built-in views that Postgres provides
             # to describe the database itself (tables, columns, constraints, ...).
@@ -107,6 +107,23 @@ class DatabaseUtil:
 
             # The full description, ready to put in the LLM prompt.
             return schema_info_context
+
+    def execute_query(self, query):
+        """Execute a SQL query and return the results as a list of tuples."""
+        try:
+            connection = self.connection
+            cursor = connection.cursor()
+            cursor.execute(query)
+            results = cursor.fetchall()
+            return str(results)
+        except Exception as e:
+            print(f"Error executing query: {e}")
+            return None
+        finally:
+            if cursor:
+                cursor.close()
+            if connection:
+                connection.close()
 
 if __name__ == "__main__":
     obj = DatabaseUtil({
