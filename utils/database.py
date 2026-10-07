@@ -17,7 +17,11 @@ Example output of schema_details("rideshare"):
 """
 
 import psycopg2
+import os
+import sys
+from dotenv import load_dotenv
 
+load_dotenv()  # Load environment variables from .env file
 
 class DatabaseUtil:
 
@@ -106,11 +110,11 @@ class DatabaseUtil:
 
 if __name__ == "__main__":
     obj = DatabaseUtil({
-        "host": "localhost",
-        "port": 5432,
-        "database": "postgres",
-        "user": "postgres",     
-        "password": "<redacted>"
+        "host": os.environ['POSTGRES_HOST'],
+        "port": int(os.environ['POSTGRES_PORT']),
+        "database": os.environ['POSTGRES_DB'],
+        "user": os.environ['POSTGRES_USER'],
+        "password": os.environ['POSTGRES_PASSWORD'],
     })
 
     result = obj.schema_details("rideshare")
