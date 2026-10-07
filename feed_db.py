@@ -1,3 +1,26 @@
+"""
+feed_db.py: load the rideshare CSV files into PostgreSQL.
+
+Run once (or whenever you want to reset the data):  uv run feed_db.py
+
+What it does, in order:
+  1. Connect to Postgres using the settings in .env
+  2. Create the `rideshare` schema and its 5 tables (if they don't exist yet)
+  3. Empty the tables (TRUNCATE), so every run starts clean
+  4. Bulk-load each CSV from data/ with Postgres COPY
+  5. Print the row count of each table
+  6. COMMIT everything in one transaction
+
+Learning notes:
+- Schema: a namespace inside a database (like a folder for tables). Our tables
+  live in `rideshare`, so their full names are rideshare.users, rideshare.rides, ...
+  Postgres looks in `public` by default, which is why the agent must write
+  `rideshare.payments` (or set search_path).
+- Transaction: autocommit is OFF, so nothing is saved until conn.commit() at the
+  end. If anything fails halfway, no partial data is saved.
+- COPY is much faster than many INSERTs: Postgres reads the whole file in one go.
+"""
+
 # write our data to the postgres database, so that we can query it later. We will use the feed_db.py script to do this.
 
 import os
@@ -5,8 +28,9 @@ import csv
 import psycopg2
 from psycopg2 import sql
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv()  # read the .env file into os.environ
 
+# Default to Postgres' standard port if .env doesn't set one.
 if 'POSTGRES_PORT' not in os.environ:
     os.environ['POSTGRES_PORT'] = '5432'
 
@@ -22,16 +46,16 @@ DB_CONFIG = {
     "password": os.environ['POSTGRES_PASSWORD'],
 }
 
-CSV_DIR = "data"
-SCHEMA = "rideshare"
+CSV_DIR = "data"        # folder with users.csv, vehicles.csv, rides.csv, payments.csv, ratings.csv
+SCHEMA = "rideshare"    # Postgres schema that holds all the tables
 
 
 # ============================================================
 # DATABASE CONNECTION
 # ============================================================
 
-conn = psycopg2.connect(**DB_CONFIG)
-conn.autocommit = False
+conn = psycopg2.connect(**DB_CONFIG)  # ** unpacks the dict into keyword arguments
+conn.autocommit = False               # group everything into one transaction (see conn.commit() at the end)
 
 cursor = conn.cursor()
 
@@ -41,6 +65,30 @@ print("Connected to PostgreSQL")
 # ============================================================
 # CREATE TABLES
 # ============================================================
+
+# Data model (-> means "references"):
+#
+#   users  (riders AND drivers, told apart by user_type)
+#     ^-- vehicles.driver_id
+#     ^-- rides.rider_id, rides.driver_id
+#     ^-- payments.user_id
+#     ^-- ratings.rider_id, ratings.driver_id
+#   rides
+#     ^-- payments.ride_id
+#     ^-- ratings.ride_id
+#
+# SQL notes:
+#   - PRIMARY KEY: unique ID for each row
+#   - FOREIGN KEY ... REFERENCES: the value must exist in the other table
+#     (e.g. a ride's driver_id must be a real user)
+#   - UNIQUE / NOT NULL / CHECK: rules Postgres enforces on every insert
+#   - DECIMAL(9,6): 9 digits in total, 6 after the decimal point (good for GPS coordinates)
+#   - IF NOT EXISTS: safe to re-run the script, it won't fail if the table is already there
+#   - Tables are created parents-first (users before rides before payments), because a
+#     foreign key can only point to a table that already exists.
+#   - INDEX (at the end): like a book's index, it lets Postgres find rows by a column
+#     without scanning the whole table. Added on the columns used most in JOINs
+#     (the *_id foreign keys) and filters (requested_at, status).
 
 create_tables_sql = """
 
@@ -220,12 +268,13 @@ print("Tables created successfully")
 
 
 # ============================================================
-# OPTIONAL: CLEAR EXISTING DATA
+# CLEAR EXISTING DATA
 # ============================================================
 
-# Uncomment this section if you want every execution
-# to completely reload the CSV data.
-
+# This runs on every execution, so each run fully reloads the CSV data.
+# Without it, a second run would fail on duplicate primary keys.
+# Comment it out if you want to keep existing rows.
+# CASCADE also empties any table that references these ones through a foreign key.
 
 cursor.execute("""
     TRUNCATE TABLE
@@ -244,6 +293,21 @@ cursor.execute("""
 # ============================================================
 
 def load_csv(table_name, csv_file, columns):
+    """
+    Bulk-load one CSV file into rideshare.<table_name> using COPY.
+
+    Args:
+        table_name: target table, e.g. "users"
+        csv_file:   file name inside CSV_DIR, e.g. "users.csv"
+        columns:    column names in the same order as the CSV header
+
+    Notes:
+        - sql.SQL(...).format(sql.Identifier(...)) builds the query safely: it
+          quotes table/column names properly, so they can't break or inject SQL
+          (unlike plain f-strings).
+        - HEADER TRUE skips the first line; NULL '' turns empty cells into NULL.
+        - copy_expert streams the open file to Postgres through COPY ... FROM STDIN.
+    """
 
     file_path = os.path.join(CSV_DIR, csv_file)
 
@@ -286,6 +350,9 @@ def load_csv(table_name, csv_file, columns):
 # ============================================================
 # LOAD USERS
 # ============================================================
+
+# Load order matters: parents first (users), then the tables that reference them,
+# otherwise the foreign keys would reject the rows.
 
 load_csv(
     "users",
@@ -417,14 +484,17 @@ for table in tables:
         )
     )
 
-    count = cursor.fetchone()[0]
+    count = cursor.fetchone()[0]  # fetchone() returns one row as a tuple: (count,)
 
+    # :<15 left-aligns in 15 chars, :>10, right-aligns in 10 chars with thousands separators
     print(f"{table:<15} {count:>10,}")
 
 
 # ============================================================
 # COMMIT
 # ============================================================
+
+# Save everything at once. Until this line, other connections can't see the new data.
 
 conn.commit()
 
