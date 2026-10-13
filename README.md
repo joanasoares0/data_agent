@@ -301,6 +301,63 @@ All use `temperature=0`, for answers that are as repeatable as possible, which i
 - **f-strings in SQL**: fine for values your code controls (the schema name), dangerous for user input (SQL injection). `feed_db.py` shows the safe way: `psycopg2.sql.Identifier`.
 - **`if __name__ == "__main__":`**: code that runs only when the file is executed directly, not when it's imported. Every file here uses it for a quick self-test.
 
+### 10. Running LLM-generated code: `execute_code` and production
+
+`ETLTools.execute_code` (in `utils/etl_tools.py`) calls `exec(code)`. That code runs **inside the same Python process as the agent, on our server**, with the same permissions. It can:
+
+- read `.env` and `os.environ` (OpenAI key, Postgres password)
+- read, change or delete any file the process can reach
+- open network connections (send data out, call internal services)
+- install packages, start processes, use all the CPU/RAM, or loop forever and freeze the agent
+
+That's fine for learning on your own machine. In production, the code comes from an LLM, and the LLM's input comes from users (and from API data), so a prompt injection can turn into arbitrary code running on the server. **Never `exec` LLM code in the app process in production.**
+
+**How to do it in production: run the code in a sandbox, not on the server.**
+
+| Option | What it is | When to pick it |
+|---|---|---|
+| Managed sandbox ([E2B](https://e2b.dev), [Modal](https://modal.com) sandboxes, [Daytona](https://daytona.io)) | an API call creates an isolated micro-VM, runs the code, returns stdout/files, destroys the VM | the easiest secure option; good default |
+| Docker container per run | `docker run` a throwaway container with no network, read-only filesystem, CPU/RAM/time limits | you host everything yourself |
+| gVisor / Firecracker | stronger isolation than plain Docker (a container shares the host kernel) | many untrusted users, higher risk |
+| Don't run code at all | the LLM picks from fixed tools (`extract_load`, `transform`, …) with typed arguments | when the tasks are predictable; the safest option |
+
+`RestrictedPython`, removing `__builtins__`, or a blocklist of words like `import os` **is not a sandbox**: there are well-known ways around all of them.
+
+Example with Docker (each run gets a new container, which is thrown away at the end):
+
+```python
+import subprocess
+
+def execute_code(code: str, data_dir: str) -> str:
+    result = subprocess.run(
+        [
+            "docker", "run", "--rm",
+            "--network", "none",              # no internet, no access to Postgres/internal services
+            "--memory", "512m", "--cpus", "1",
+            "--pids-limit", "64",
+            "--read-only",                    # filesystem is read-only...
+            "--tmpfs", "/tmp:size=64m",       # ...except a small /tmp
+            "-v", f"{data_dir}:/data:ro",     # only the data it needs, read-only
+            "--user", "1000:1000",            # not root
+            "python-sandbox:latest",          # image with only pandas etc., no secrets
+            "python", "-c", code,
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    return result.stdout if result.returncode == 0 else f"Error: {result.stderr}"
+```
+
+Production checklist:
+
+1. **Isolation**: separate VM/container per run, destroyed afterwards; never the agent's own process.
+2. **No secrets inside**: no `.env`, no API keys, no DB credentials in the sandbox.
+3. **No network** by default; if it's needed, an allowlist of domains.
+4. **Limits**: timeout, memory, CPU, number of processes, output size.
+5. **Least data**: mount only the files that run needs, read-only; outputs go to a separate folder you check before using them.
+6. **Return the output**: capture stdout/stderr (the current `exec` version only returns "Code executed successfully", so the agent never sees the result).
+7. **Logging**: store each piece of code that ran, who asked for it and the result, so you can audit it.
+8. **Human approval** for anything that writes to real systems (DB, cloud storage).
+
 ---
 
 ## Debugging journal: bugs found and what they taught
@@ -324,6 +381,7 @@ All use `temperature=0`, for answers that are as repeatable as possible, which i
 - The schema name `rideshare` is hard-coded in `prompt_query_context` and `execute_sql`.
 - The whole schema (+ sample rows) is sent on every question. Fine for 5 tables, too big for 500.
 - The LLM judge is the only safety layer; there's no read-only DB user yet.
+- `ETLTools.execute_code` runs LLM code with `exec` inside the agent process, which is fine locally but not safe in production (see [learning note 10](#10-running-llm-generated-code-execute_code-and-production)).
 - No retry: if the SQL fails, the agent explains the error but doesn't try to fix it.
 - A new DB connection is opened per call, and `DatabaseUtil` closes it after one method call.
 - If the DB connection fails, `execute_query` / `schema_details` hit a `NameError` on `cursor` in `finally`, hiding the real error.

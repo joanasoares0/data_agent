@@ -27,6 +27,8 @@ from typing import Annotated, Literal
 from operator import add
 
 
+#------ Classes for SQL analyst agent -------------------------------------------------------------
+
 class AgentSchema(BaseModel):
     """State shared by all nodes of the SQL analyst graph."""
 
@@ -82,3 +84,15 @@ class JudgeSchema(BaseModel):
     """
     is_safe : Literal["Yes", "No"] = Field(..., description="A boolean flag indicating whether the generated SQL query is safe to execute or not")
     comments : str = Field(..., description="Comments or feedback provided by the judge regarding the safety of the SQL query")
+
+
+
+
+
+#------ Classes for ETL analyst agent -------------------------------------------------------------
+
+class ETLAgentSchema(BaseModel):
+    """State shared by all nodes of the ETL analyst graph."""
+
+    # --- Conversation history -------------------------------------------------
+    messages : Annotated[list, add] = Field(..., description="List of messages to be processed by the agent")

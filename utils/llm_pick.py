@@ -38,17 +38,16 @@ def pick_llm(level: str):
 
     Raises:
         ValueError: if level is not one of the three options.
-        (Note: the error message still lists the old names basic/intermediate/advanced.)
     """
 
     if level.lower() == "low":
-        llm = ChatOpenAI(model_name="gpt-5.6-luna", temperature=0, max_tokens=1500)
+        llm = ChatOpenAI(model_name="gpt-5.6-luna", temperature=0, max_tokens=1500, model_kwargs={"reasoning_effort": "none"})
     elif level.lower() == "medium":
-        llm = ChatOpenAI(model_name="gpt-5.6-terra", temperature=0, max_tokens=1500)
+        llm = ChatOpenAI(model_name="gpt-5.6-terra", temperature=0, max_tokens=1500, model_kwargs={"reasoning_effort": "none"})
     elif level.lower() == "advanced":
-        llm = ChatOpenAI(model_name="gpt-5.6-sol", temperature=0, max_tokens=1500)
+        llm = ChatOpenAI(model_name="gpt-5.6-sol", temperature=0, max_tokens=1500, model_kwargs={"reasoning_effort": "none"})
     else:
-        raise ValueError("Invalid level provided. Choose from 'basic', 'intermediate', or 'advanced'.")
+        raise ValueError("Invalid level provided. Choose from 'low', 'medium', or 'advanced'.")
 
     return llm
 

@@ -1,4 +1,5 @@
 """
+STATEFUL AGENT
 SQL Analyst Agent: ask a question in plain English, get an answer from Postgres.
 
 The agent is a LangGraph *state graph*: a set of Python functions (nodes)
