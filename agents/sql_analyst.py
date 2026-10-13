@@ -387,10 +387,12 @@ sql_agent_graph.add_edge("canceled_sql", END)
 # ======================================================================================
 # RUN
 # ======================================================================================
+# compile() checks the graph (e.g. every edge points to a real node) and
+# returns a runnable object with .invoke(). Done at module level so other
+# agents (e.g. data_agent) can import `sql_analyst`.
+sql_analyst = sql_agent_graph.compile()
+
 if __name__ == "__main__":
-    # compile() checks the graph (e.g. every edge points to a real node) and
-    # returns a runnable object with .invoke().
-    sql_analyst = sql_agent_graph.compile()
 
     # Save a diagram of the graph (rendered with Mermaid) to a PNG file.
     img = Image(sql_analyst.get_graph().draw_mermaid_png())

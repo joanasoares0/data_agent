@@ -76,7 +76,7 @@ def transform_load_tool(
         Here's the context of the data you will be analyzing: {top_3_rows}\n
         """
 
-    response = llm.invoke(prompt).content 
+    response = llm.invoke(prompt).text
 
     # Optional Cleaning
     pandas_code = response.strip().strip('```').strip().lstrip('python').strip()
@@ -161,13 +161,12 @@ etl_analyst_graph.add_conditional_edges(
 
 etl_analyst_graph.add_edge("tool_node", "llm_node")
 
+etl_analyst = etl_analyst_graph.compile()
 
 if __name__ == "__main__":
     #llm_bind = pick_llm("advanced").bind_tools(tools)
     #print(llm.invoke("I want to extract the data from the API endpoint 'https://api.example.com/data' and save it as a csv file in the folder '/data/output'."))
     
-    # Compile the Graph
-    etl_analyst = etl_analyst_graph.compile()
 
     # Optional
     from IPython.display import display, Image
@@ -175,16 +174,16 @@ if __name__ == "__main__":
     with open("etl_analyst_graph.png", "wb") as f:
         f.write(img.data)
 
-    response = etl_analyst.invoke(
-        {"messages":[HumanMessage(content="I want to extract the data from the API endpoint 'https://pokeapi.co/api/v2/pokemon' and save it to data/extract folder in the csv folder")]}
-    )
+    #response = etl_analyst.invoke(
+    #    {"messages":[HumanMessage(content="I want to extract the data from the API endpoint 'https://pokeapi.co/api/v2/pokemon' and save it to data/extracted folder in the csv folder")]}
+    #)
 
-#     response = etl_analyst.invoke(
-#          {"messages":[HumanMessage(content=f"""
-#             I want to transform the data stored in the 'c:\\Data_Agent\\data\\extract\\extracted_data.csv' file 
-#             and save the transformed data in the 'c:\\Data_Agent\\data\\transform' folder in the csv format.
-#             The transformation should filter the data to show bulbasaur pokemon only.
-# """)]}
-#     )    
+    response = etl_analyst.invoke(
+         {"messages":[HumanMessage(content="""
+            I want to transform the data stored in the 'data/extracted/extracted_data.csv' file 
+            and save the transformed data in the 'data/transform' folder in the csv format.
+            The transformation should filter the data to show bulbasaur pokemon only.
+    """)]}
+    )    
 
     print(response)
