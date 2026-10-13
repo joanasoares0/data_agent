@@ -1,14 +1,46 @@
+"""
+ETL helpers used by the ETL analyst agent (agents/etl_analyst.py).
+
+The agent's tools are thin wrappers around these methods. Keeping the real
+work here (plain Python, no LLM) means each step can be tested on its own.
+
+Methods:
+
+1. extract_load(url, destination, format)
+   Extract + Load: call a web API, turn the JSON into a table (DataFrame),
+   and save it as csv / json / parquet.
+
+2. transform_load_context(file_path)
+   Read a data file and return its first 3 rows as text. That text goes into
+   the LLM prompt, so the model knows the columns before writing pandas code.
+
+3. execute_code(code)
+   Run a piece of Python code (written by the LLM) with exec().
+
+Learning notes:
+- requests is the standard library for calling web APIs (HTTP).
+- pandas is the standard library for tables in Python. A DataFrame is a table
+  with named columns, like a sheet in Excel.
+- JSON from an API is often nested ({"results": [{"name": ..., "url": ...}]}).
+  pd.json_normalize flattens it into rows and columns.
+"""
+
 import os
 import requests
 import pandas as pd
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv()  # read .env into os.environ (used by PATH_DATA_EXTRACTED in the test below)
 
 class ETLTools:
+    # No settings to keep yet, so __init__ does nothing. The class just groups
+    # the related functions together.
     def __init__(self):
         pass
 
+    # ----------------------------------------------------------------------------------
+    # Extract + Load
+    # ----------------------------------------------------------------------------------
     def extract_load(self, url: str, destination: str, format: str = "csv") -> str:
         """
         This tools extracts data from the API(url) and loads it into the desired location(destination)
@@ -20,20 +52,32 @@ class ETLTools:
         """
 
         # Resolve paths relative to the project root (parent of utils/)
+        # e.g. destination "data/extracted" -> /.../data_agent/data/extracted,
+        # so the file lands in the same place whatever folder you run from.
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         output_folder = os.path.join(project_root, destination)
 
         try:
+            # 1) Extract: call the API.
             response = requests.get(url)
+            # raise_for_status() turns an HTTP error (404, 500, ...) into an exception,
+            # so it's handled by the `except` below instead of being ignored.
             response.raise_for_status()
-            data  = response.json()
+            data  = response.json()  # the response body as Python dicts/lists
 
+            # 2) Prepare the output: file name + make sure the folder exists.
+            # exist_ok=True: don't fail if the folder is already there.
             filename = os.path.join(output_folder, f"extracted_data.{format}")
             os.makedirs(output_folder, exist_ok=True)
 
+            # 3) Transform the JSON into a table.
+            # Assumes the API puts its rows under a "results" key (true for PokeAPI).
             # Normalize the JSON data and save it in the specified format
             df = pd.json_normalize(data['results'])
 
+            # 4) Load: write the file in the requested format.
+            # index=False: don't write pandas' row numbers as an extra column.
+            # lines=True (json): one JSON object per line ("JSON Lines").
             if format == "csv":
                 df.to_csv(filename, index=False)
             elif format == "json":
@@ -43,12 +87,17 @@ class ETLTools:
             else:
                 return f"Unsupported format: {format}"
 
+            # Errors and successes are both returned as text: the LLM reads this
+            # message and tells the user what happened.
             return f"Data successfully extracted and saved to {filename}"
-        
+
         except requests.exceptions.RequestException as e:
             return f"Failed to extract data: {e}"
 
-    def transform_load_context(self, file_path:str):  
+    # ----------------------------------------------------------------------------------
+    # Context for the transform step
+    # ----------------------------------------------------------------------------------
+    def transform_load_context(self, file_path:str):
         """
         This tool transforms the data from the specified file and loads it into the
         desired location (output_folder).
@@ -60,9 +109,13 @@ class ETLTools:
         Returns:
             str: A message indicating the success or failure of the operation.
         """
+        # What it really does: read the file and return its first 3 rows as text
+        # (the docstring above describes the whole tool, not this method).
 
+        # splitext("data/x.csv") -> ("data/x", ".csv"); lower() so ".CSV" also works.
         file_extension = os.path.splitext(file_path)[1].lower()
 
+        # Pick the right pandas reader for the file type.
         if file_extension == ".csv":
             df = pd.read_csv(file_path)
         elif file_extension == ".json":
@@ -72,10 +125,16 @@ class ETLTools:
         else:
             return f"Unsupported file format: {file_extension}"
 
+        # head(3) = first 3 rows; str() turns the table into readable text, e.g.
+        #          name                                       url
+        #   0   bulbasaur  https://pokeapi.co/api/v2/pokemon/1/
         top_3_rows = str(df.head(3))
 
         return top_3_rows
 
+    # ----------------------------------------------------------------------------------
+    # Run LLM-written code
+    # ----------------------------------------------------------------------------------
     def execute_code(self,code:str):
         """
         This tool executes the provided code and returns the output.
@@ -85,15 +144,23 @@ class ETLTools:
         Returns:
             str: The output of the executed code or an error message if execution fails.
         """
+        # exec(code) runs a string as Python code, inside THIS process.
+        # ⚠ The code comes from an LLM, so it can do anything this program can:
+        #   read .env, delete files, call the internet. OK for learning on your
+        #   own machine; in production run it in a sandbox (see README, note 10).
+        # Note: it returns a fixed message, not what the code printed or produced.
 
         try:
             exec(code)
             return "Code executed successfully."
-        
+
         except Exception as e:
+            # A bug in the generated code becomes a message, not a crash.
             return f"Failed to execute code: {e}"
 
 
+# Quick manual test: `uv run utils/etl_tools.py`
+# Needs PATH_DATA_EXTRACTED in .env (a folder path ending with "/").
 if __name__ == "__main__":
     etl_tools = ETLTools()
     url = "https://pokeapi.co/api/v2/pokemon?limit=10"

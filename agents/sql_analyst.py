@@ -20,7 +20,7 @@ Flow:
                            -> END
 
 Run it with:  uv run agents/sql_analyst.py
-It also saves a picture of the graph to sql_analyst_graph.png.
+It also saves a picture of the graph to img/sql_analyst_graph.png.
 """
 
 import os 
@@ -394,10 +394,11 @@ sql_analyst = sql_agent_graph.compile()
 
 if __name__ == "__main__":
 
-    # Save a diagram of the graph (rendered with Mermaid) to a PNG file.
+    # Save a diagram of the graph (rendered with Mermaid) to img/. The path is
+    # built from this file's folder, so it works wherever you run the script from.
     img = Image(sql_analyst.get_graph().draw_mermaid_png())
 
-    with open("sql_analyst_graph.png", "wb") as f:
+    with open(os.path.join(os.path.dirname(__file__), "..", "img", "sql_analyst_graph.png"), "wb") as f:
         f.write(img.data)
 
     # Initial state. Every required AgentSchema field needs a starting value;

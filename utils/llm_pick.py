@@ -5,9 +5,9 @@ Not every step of the agent needs the most powerful (and most expensive) model.
 Rewording a question is easy; writing correct SQL is harder. So each node asks
 for a "level" and this function maps it to a model:
 
-    "low"      -> cheap, fast model   (curate the question, write the final answer)
-    "medium"   -> stronger model      (generate SQL, judge if the SQL is safe)
-    "advanced" -> strongest model     (not used yet)
+    "low"      -> cheap, fast model   (SQL agent: curate the question, write the final answer)
+    "medium"   -> stronger model      (SQL agent: generate SQL, judge if the SQL is safe)
+    "advanced" -> strongest model     (router, ETL agent, and the pandas code it writes)
 
 Keeping this in one function means you can swap models for the whole project
 by editing a single file.
@@ -16,6 +16,9 @@ Learning notes:
 - temperature=0 makes the output as deterministic as possible. Good for SQL and
   classification, where you want the same answer every time, not creativity.
 - max_tokens caps the length of the reply (and so the cost of each call).
+- reasoning_effort="none" turns off the model's hidden "thinking" step:
+  faster and cheaper, fine for these short tasks. It's passed as a direct
+  argument (inside model_kwargs, LangChain prints a warning).
 - ChatOpenAI reads OPENAI_API_KEY from the environment, which load_dotenv()
   fills in from the .env file.
 """

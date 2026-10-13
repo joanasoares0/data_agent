@@ -1,15 +1,20 @@
 """
-Data models (Pydantic) used by the SQL analyst agent.
+Data models (Pydantic) used by all three agents.
 
-Two models live here:
+There are two kinds of model here:
 
-- AgentSchema: the *state* of the LangGraph agent. Think of it as a shared
-  notebook that travels through every node of the graph. Each node reads the
-  fields it needs and writes back the fields it produced.
+1. STATE models: the shared "notebook" that travels through every node of a
+   LangGraph graph. Each node reads the fields it needs and writes back the
+   fields it produced. One per agent:
+     - AgentSchema      -> SQL analyst  (agents/sql_analyst.py)
+     - ETLAgentSchema   -> ETL analyst  (agents/etl_analyst.py)
+     - DataAgentSchema  -> Data agent / router (agents/data_agent.py)
 
-- JudgeSchema: the *structured output* of the safety judge. Instead of letting
-  the LLM answer with free text, we force it to fill in this exact shape
-  (is_safe + comments), so the code can read the answer reliably.
+2. STRUCTURED OUTPUT models: the exact shape an LLM must answer in. Instead of
+   letting the LLM reply with free text, llm.with_structured_output(Model)
+   forces it to fill in these fields, so the code can read the answer reliably.
+     - JudgeSchema  -> the SQL safety judge (is_safe + comments)
+     - RouteSchema  -> the router (answer = "sql" | "etl" + comments)
 
 Learning notes:
 - Pydantic's BaseModel validates data when an object is created. If a field
@@ -95,14 +100,33 @@ class ETLAgentSchema(BaseModel):
     """State shared by all nodes of the ETL analyst graph."""
 
     # --- Conversation history -------------------------------------------------
+    # The only field. A tool-calling (ReAct) agent keeps everything in the
+    # message list: the user request, the LLM's tool calls (AIMessage), the
+    # tool results (ToolMessage) and the final answer. The LLM re-reads this
+    # list on every turn to decide what to do next.
+    # `add` reducer: nodes return only their NEW messages, which get appended.
     messages : Annotated[list, add] = Field(..., description="List of messages to be processed by the agent")
 
 
 #------ Classes for orchestration agent -------------------------------------------------------------
+# Shape of the router's answer (structured output).
+# Used with llm.with_structured_output(RouteSchema) in data_agent.py.
+# Literal["sql", "etl"] means the model can only pick one of these two, so the
+# conditional edge can trust the value. The field descriptions are sent to the
+# LLM, so they act as instructions.
+# (Written as comments, not a docstring: a class docstring is ALSO sent to the
+# LLM as the schema description, which would change the router's prompt.)
 class RouteSchema(BaseModel):
     answer: Literal["sql","etl"] = Field(..., description="Indicates whether the user's question is related to SQL or ETL operations")
+    # Not used by the graph, but asking the model to explain its choice helps
+    # when debugging a wrong route (and can improve the choice itself).
     comments: str = Field(..., description="Additional comments or feedback regarding the classification of the user's question")
 
+# State shared by all nodes of the Data agent (router) graph.
 class DataAgentSchema(BaseModel):
+    # Conversation history: the user's request, then the specialist's answer.
+    # `add` reducer, same as above.
     messages : Annotated[list,add] = Field(..., description="List of messages to be processed by the Data agent")
+    # Written by router_node ("sql" or "etl"), read by the conditional edge.
+    # Typed as plain str (not Literal) so the run can start with "".
     route_response : str = Field(..., description="The response from the router indicating whether to route to SQL or ETL operations")
