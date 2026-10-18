@@ -71,6 +71,11 @@ class DatabaseUtil:
 
         schema_info_context = ""
 
+        # If the connection failed in __init__, stop here with a clear message
+        # (otherwise connection.cursor() below fails with a confusing AttributeError).
+        if self.connection is None:
+            return f"Database Schema: {schema_name}\nError: could not connect to the database.\n"
+
         # A cursor is the object that sends SQL to the database and holds the results.
         connection = self.connection
         cursor = connection.cursor()
@@ -155,8 +160,15 @@ class DatabaseUtil:
         Returns a string (not a list) because AgentSchema.sql_query_execution_result
         is typed as str, and the result is pasted into an LLM prompt anyway.
         """
+        # Same check as in schema_details: no connection, no query.
+        if self.connection is None:
+            return "Error executing query: could not connect to the database."
+
+        # Start with None so `finally` can always check them, even if
+        # connection.cursor() itself fails.
+        connection = self.connection
+        cursor = None
         try:
-            connection = self.connection
             cursor = connection.cursor()
             cursor.execute(query)
             results = cursor.fetchall()
@@ -167,9 +179,6 @@ class DatabaseUtil:
             print(f"Error executing query: {e}")
             return f"Error executing query: {e}"
         finally:
-            # Note: if self.connection is None (connection failed in __init__),
-            # `cursor` is never assigned and this block raises NameError,
-            # hiding the original error.
             if cursor:
                 cursor.close()
             if connection:

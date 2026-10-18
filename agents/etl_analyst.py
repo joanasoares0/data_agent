@@ -118,6 +118,20 @@ def transform_load_tool(
     """
     etl_tools = ETLTools()
 
+    # Step 0: turn relative paths ("data/extracted/...") into full paths from the
+    # project root, so the generated code reads and writes the same place
+    # whatever folder the script is run from.
+    input_file_path = etl_tools.resolve_path(input_file_path)
+    output_folder = etl_tools.resolve_path(output_folder)
+
+    # Make sure the output folder exists. The LLM sometimes passes a FILE path
+    # as the folder (e.g. "data/transform/result.json"): if the path has an
+    # extension, create its parent folder instead of a folder named "result.json".
+    if os.path.splitext(output_folder)[1]:
+        os.makedirs(os.path.dirname(output_folder), exist_ok=True)
+    else:
+        os.makedirs(output_folder, exist_ok=True)
+
     # Step 1: give the LLM context about the data.
     # Like the sample rows in the SQL agent: the LLM writes better code when it
     # sees the real column names and example values.
@@ -135,7 +149,7 @@ def transform_load_tool(
         The code should be in a format that can be executed in a Python environment with Pandas installed. 
         Don't write anything else than Pandas Code. \n
         
-        Create the Pandas Dataframe from the data stored in the file : {input_file_path} and then write the code to transform and save the data at {output_folder}.
+        Create the Pandas Dataframe from the data stored in the file : {input_file_path} and then write the code to transform and save the data at {output_folder} as a {output_format} file.
         Here's the user's question: {user_question}\n
         Here's the context of the data you will be analyzing: {top_3_rows}\n
         """
@@ -149,9 +163,16 @@ def transform_load_tool(
     #   ```python
     #   import pandas as pd ...
     #   ```
-    # strip('```') removes the backticks, lstrip('python') removes the language tag.
-    # Optional Cleaning
-    pandas_code = response.strip().strip('```').strip().lstrip('python').strip()
+    # removeprefix/removesuffix remove that exact text from the start/end.
+    # (Don't use lstrip('python'): it removes any of the CHARACTERS p,y,t,h,o,n,
+    # so "pd.read_csv(...)" would become "d.read_csv(...)".)
+    pandas_code = (
+        response.strip()
+        .removeprefix("```python")
+        .removeprefix("```")
+        .removesuffix("```")
+        .strip()
+    )
 
     # Step 4: run the generated code. It reads the input file and writes the output file.
     # ⚠ exec() runs LLM-written code with full access to this machine.
@@ -159,7 +180,12 @@ def transform_load_tool(
     # Execute the Pandas code
     results = etl_tools.execute_code(pandas_code)
 
-    # The returned text becomes a ToolMessage the agent LLM reads in its next turn.
+    # The returned text becomes a ToolMessage the agent LLM reads in its next turn,
+    # so it must say clearly whether it worked; otherwise the LLM tells the user
+    # "done" even when nothing was saved.
+    if results.startswith("Failed"):
+        return f"The transformation FAILED and no file was saved. \n\n Pandas Code Executed: \n {pandas_code} \n\n Error: \n {results}"
+
     return f"The data is transformed and saved at {output_folder} in {output_format} format. \n\n Pandas Code Executed: \n {pandas_code} \n\n Execution Result: \n {results}"
 
 

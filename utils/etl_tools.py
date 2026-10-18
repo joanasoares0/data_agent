@@ -39,6 +39,21 @@ class ETLTools:
         pass
 
     # ----------------------------------------------------------------------------------
+    # Paths
+    # ----------------------------------------------------------------------------------
+    def resolve_path(self, path: str) -> str:
+        """
+        Turn a path relative to the project root (e.g. "data/extracted") into a
+        full path. Full paths are returned unchanged.
+
+        Without this, "data/extracted" would mean "data/extracted inside the
+        folder you ran the script from", which changes from run to run.
+        """
+        # project root = the folder above utils/
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        return os.path.join(project_root, path)  # join() keeps `path` as-is if it's already absolute
+
+    # ----------------------------------------------------------------------------------
     # Extract + Load
     # ----------------------------------------------------------------------------------
     def extract_load(self, url: str, destination: str, format: str = "csv") -> str:
@@ -51,11 +66,10 @@ class ETLTools:
             str: A message indicating the success of the operation.
         """
 
-        # Resolve paths relative to the project root (parent of utils/)
+        # Resolve paths relative to the project root,
         # e.g. destination "data/extracted" -> /.../data_agent/data/extracted,
         # so the file lands in the same place whatever folder you run from.
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        output_folder = os.path.join(project_root, destination)
+        output_folder = self.resolve_path(destination)
 
         try:
             # 1) Extract: call the API.
@@ -71,9 +85,14 @@ class ETLTools:
             os.makedirs(output_folder, exist_ok=True)
 
             # 3) Transform the JSON into a table.
-            # Assumes the API puts its rows under a "results" key (true for PokeAPI).
+            # Many APIs (like PokeAPI) put the rows under a "results" key; others
+            # return a list of rows, or a single object. Handle all three.
+            if isinstance(data, dict) and "results" in data:
+                rows = data["results"]
+            else:
+                rows = data
             # Normalize the JSON data and save it in the specified format
-            df = pd.json_normalize(data['results'])
+            df = pd.json_normalize(rows)
 
             # 4) Load: write the file in the requested format.
             # index=False: don't write pandas' row numbers as an extra column.
@@ -92,7 +111,12 @@ class ETLTools:
             return f"Data successfully extracted and saved to {filename}"
 
         except requests.exceptions.RequestException as e:
+            # Network problems, HTTP errors (404, 500, ...), or a reply that isn't JSON.
             return f"Failed to extract data: {e}"
+        except Exception as e:
+            # Anything else (unexpected JSON shape, can't write the file, ...):
+            # report it as text instead of crashing the whole graph.
+            return f"Failed to save the extracted data: {e}"
 
     # ----------------------------------------------------------------------------------
     # Context for the transform step
@@ -111,6 +135,8 @@ class ETLTools:
         """
         # What it really does: read the file and return its first 3 rows as text
         # (the docstring above describes the whole tool, not this method).
+
+        file_path = self.resolve_path(file_path)
 
         # splitext("data/x.csv") -> ("data/x", ".csv"); lower() so ".CSV" also works.
         file_extension = os.path.splitext(file_path)[1].lower()

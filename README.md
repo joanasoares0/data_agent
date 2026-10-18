@@ -56,6 +56,23 @@ What happens when you run `uv run main.py`:
 
 Each specialist is a complete LangGraph graph of its own. The Data Agent runs it inside one of its nodes, so it works as a **sub-graph**: the Data Agent doesn't need to know what happens inside.
 
+```mermaid
+flowchart LR
+    START((START)) --> router{router_node<br/>sql or etl?}
+    router -->|sql| sql_node
+    router -->|etl| etl_node
+    subgraph sql_node["sql_node = the whole SQL Analyst graph"]
+        direction LR
+        a[curate] --> b[context] --> c[SQL] --> d{safe?} --> e[run] --> f[explain]
+    end
+    subgraph etl_node["etl_node = the whole ETL Analyst graph"]
+        direction LR
+        g[llm_node] <-->|loop| h[tool_node]
+    end
+    sql_node --> END((END))
+    etl_node --> END
+```
+
 ### Three ways to build an agent
 
 |  | Who decides the next step? | Good for | Here |
@@ -65,6 +82,27 @@ Each specialist is a complete LangGraph graph of its own. The Data Agent runs it
 | **Router** | The LLM, once, at the start | Sending different kinds of request to different specialists | Data Agent |
 
 A workflow is easier to test and cheaper to run. A ReAct loop is more flexible, but it's harder to predict. Most real systems mix the two, as this project does.
+
+```mermaid
+flowchart LR
+    subgraph W["Workflow: code decides"]
+        direction TB
+        w1[step 1] --> w2[step 2] --> w3[step 3] --> w4{check} -->|ok| w5[step 4]
+        w4 -->|not ok| w6[stop]
+    end
+    subgraph R["ReAct: LLM decides each turn"]
+        direction TB
+        r1[LLM thinks] -->|wants a tool| r2[run tool]
+        r2 -->|result| r1
+        r1 -->|done| r3[answer]
+    end
+    subgraph O["Router: LLM decides once"]
+        direction TB
+        o1{LLM: which kind?} -->|sql| o2[specialist A]
+        o1 -->|etl| o3[specialist B]
+    end
+    W ~~~ R ~~~ O
+```
 
 ---
 
@@ -298,8 +336,8 @@ After `llm_node`, the router `is_tool_call` checks: *are there tool calls?* Yes 
 
 | Tool | Steps |
 |---|---|
-| `extract_load_tool(url, output_folder, format)` | `requests.get(url)` → `pd.json_normalize(data["results"])` → save as csv / json / parquet |
-| `transform_load_tool(input_file_path, output_folder, output_format, user_question)` | read the first 3 rows of the file → a **second LLM** writes pandas code → strip the Markdown fences → `exec()` the code, which saves the new file |
+| `extract_load_tool(url, output_folder, format)` | `requests.get(url)` → `pd.json_normalize(...)` (the `"results"` list if there is one, otherwise the whole reply) → save as csv / json / parquet |
+| `transform_load_tool(input_file_path, output_folder, output_format, user_question)` | turn the paths into full paths from the project root → read the first 3 rows of the file → a **second LLM** writes pandas code → remove the Markdown fence → `exec()` the code, which saves the new file → report clearly whether it worked or failed |
 
 ### A real run, message by message
 
@@ -340,7 +378,35 @@ A single prompt like *"write SQL for this question"* often fails: the model gues
 | **Sub-graph** | A compiled graph called from inside another graph's node |
 | **draw_mermaid_png()** | Renders the graph as an image (saved in `img/`) |
 
+**State: one shared notebook.** Every node gets the whole state, but returns only the fields it changed. LangGraph merges that into the state and passes it on. In the SQL Analyst, the notebook fills up like this:
+
+```mermaid
+flowchart LR
+    s0["<b>start</b><br/>user_input ✔<br/>curated_question —<br/>generated_sql_query —<br/>is_safe —<br/>final_answer —"]
+    s1["<b>after curate_question</b><br/>user_input ✔<br/>curated_question ✔<br/>generated_sql_query —<br/>is_safe —<br/>final_answer —"]
+    s2["<b>after generate_sql</b><br/>user_input ✔<br/>curated_question ✔<br/>generated_sql_query ✔<br/>is_safe —<br/>final_answer —"]
+    s3["<b>at the end</b><br/>user_input ✔<br/>curated_question ✔<br/>generated_sql_query ✔<br/>is_safe ✔<br/>final_answer ✔"]
+    s0 --> s1 --> s2 -->|"...more nodes..."| s3
+```
+
 **Reducers: how updates are merged.** By default, a field a node returns *replaces* the old value. A field declared as `Annotated[list, add]` gets the new list *appended* instead:
+
+```mermaid
+flowchart TB
+    subgraph A["Field WITHOUT a reducer (e.g. final_answer)"]
+        direction LR
+        a1["state: 'old'"] --> a2["node returns 'new'"] --> a3["state: 'new'<br/>(replaced)"]
+    end
+    subgraph B["Field WITH the add reducer (messages)"]
+        direction LR
+        b1["state: [m1, m2]"] --> b2["node returns [m3]"] --> b3["state: [m1, m2, m3]<br/>(appended)"]
+    end
+    subgraph C["❌ The bug: returning the whole list"]
+        direction LR
+        c1["state: [m1, m2]"] --> c2["node returns [m1, m2, m3]"] --> c3["state: [m1, m2, m1, m2, m3]<br/>(duplicates!)"]
+    end
+    A ~~~ B ~~~ C
+```
 
 ```python
 messages: Annotated[list, add]          # in the state model
@@ -372,6 +438,30 @@ The LLM never runs your code. What happens:
 
 The docstring is part of the prompt, so a clear docstring means the LLM picks the right tool with the right arguments.
 
+The same flow as a timeline:
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant L as llm_node
+    participant API as OpenAI model
+    participant T as tool_node
+    participant F as Python function
+
+    U->>L: HumanMessage "extract the Pokémon data..."
+    L->>API: history + tool descriptions (bind_tools)
+    API-->>L: AIMessage with tool_calls<br/>extract_load_tool(url, folder, "csv")
+    Note over L,T: is_tool_call: yes → tool_node
+    L->>T: last message has tool_calls
+    T->>F: extract_load_tool(**args)
+    F-->>T: "Data successfully extracted..."
+    T-->>L: ToolMessage (same tool_call_id)
+    L->>API: history (now with the result)
+    API-->>L: AIMessage "Done! Saved to data/extracted/..." (no tool_calls)
+    Note over L: is_tool_call: no → END
+    L-->>U: final answer
+```
+
 ### 4. Message types
 
 | Type | Who says it | Example |
@@ -398,6 +488,15 @@ llm_router = llm.with_structured_output(RouteSchema)   # Data Agent
 llm_router.invoke("Download the Pokémon data")   # -> RouteSchema(answer="etl", comments="...")
 ```
 
+```mermaid
+flowchart LR
+    P["Pydantic class<br/>RouteSchema<br/>answer: 'sql' | 'etl'<br/>comments: str"] -->|"converted to<br/>JSON schema"| M["LLM"]
+    Q["user request"] --> M
+    M -->|"replies with JSON<br/>{answer: 'etl', comments: '...'}"| V{"Pydantic<br/>validates"}
+    V -->|valid| O["RouteSchema object<br/>.answer == 'etl'"]
+    V -->|invalid| E["error<br/>(never a surprise string)"]
+```
+
 Instead of parsing free text (*"I think this is probably about ETL..."*), LangChain sends the Pydantic schema to the model and turns the reply back into an object. The `description=` of each field is sent too, **and so is the class docstring**, so both act as instructions. `.model_dump()` turns the object into a dict.
 
 ### 7. Context is everything (prompt engineering)
@@ -406,6 +505,17 @@ The LLM has never seen your data. Both agents give it context first:
 
 - **SQL**: tables, columns, types and **5 sample rows** per table (open `schema_details.txt` to see it)
 - **ETL**: the **first 3 rows** of the file before it writes pandas code
+
+```mermaid
+flowchart LR
+    role["role<br/>'You are an SQL analyst'"] --> prompt
+    rules["guardrails<br/>LIMIT 10, prefix rideshare."] --> prompt
+    q["the curated question"] --> prompt
+    schema["tables, columns, types<br/>(information_schema)"] --> prompt
+    rows["5 sample rows per table"] --> prompt
+    contract["output contract<br/>'only SQL, no explanation'"] --> prompt
+    prompt["📝 the final prompt"] --> llm["LLM (medium)"] --> sql["SQL query"]
+```
 
 Sample values teach the exact spelling (`'credit_card'` not `'Credit Card'`), formats and column names. Each prompt also has:
 
@@ -422,6 +532,19 @@ Sample values teach the exact spelling (`'credit_card'` not `'Credit Card'`), fo
 3. the LLM judge for the fuzzy cases and the explanation
 4. statement timeouts and row limits
 
+```mermaid
+flowchart LR
+    q["SQL written<br/>by the LLM"] --> l3{"LLM judge<br/>(we have this)"}
+    l3 -->|"looks safe"| l2{"code check:<br/>only SELECT?<br/>(to do)"}
+    l2 -->|ok| l1{"read-only<br/>DB user<br/>(to do)"}
+    l1 -->|allowed| l4["timeout +<br/>row limit"] --> db[("Postgres")]
+    l3 -->|unsafe| x1["❌ cancel"]
+    l2 -->|"DROP / UPDATE..."| x2["❌ reject"]
+    l1 -->|"write attempt"| x3["❌ permission denied"]
+```
+
+Each layer catches what the one before it missed. The read-only user is the only layer that **cannot** be talked out of its rule.
+
 ### 9. Model tiering (cost vs quality)
 
 `pick_llm(level)` maps a level to a model, so each step uses the cheapest model that does it well:
@@ -431,6 +554,27 @@ Sample values teach the exact spelling (`'credit_card'` not `'Credit Card'`), fo
 | `low` | `gpt-5.6-luna` | rewording the question, writing the final SQL answer | easy language tasks |
 | `medium` | `gpt-5.6-terra` | writing SQL, judging safety | reasoning, must be correct |
 | `advanced` | `gpt-5.6-sol` | the router, the ETL agent, writing pandas code | choosing tools and writing code |
+
+```mermaid
+flowchart LR
+    subgraph low["low: cheap and fast"]
+        c1[curate question]
+        c2[represent answer]
+    end
+    subgraph medium["medium: careful reasoning"]
+        c3[generate SQL]
+        c4[safety judge]
+    end
+    subgraph advanced["advanced: tools and code"]
+        c5[router]
+        c6[ETL llm_node]
+        c7[pandas code writer]
+    end
+    low ~~~ medium ~~~ advanced
+    style low fill:#d3f9d8,stroke:#2f9e44
+    style medium fill:#fff3bf,stroke:#f08c00
+    style advanced fill:#ffe3e3,stroke:#e03131
+```
 
 All use `temperature=0` (answers as repeatable as possible) and `reasoning_effort="none"` (no hidden "thinking" step, so they're faster and cheaper). `pick_llm` takes a **level**, not a model name: `pick_llm("gpt-5.6-sol")` raises a `ValueError`.
 
@@ -471,6 +615,24 @@ All use `temperature=0` (answers as repeatable as possible) and `reasoning_effor
 - install packages, start processes, use all the CPU/RAM, or loop forever and freeze the agent
 
 That's fine for learning on your own machine. In production, the code comes from an LLM, and the LLM's input comes from users (and from API data), so a prompt injection can turn into arbitrary code running on the server. **Never `exec` LLM code in the app process in production.**
+
+```mermaid
+flowchart LR
+    subgraph now["Now (learning): exec() in the agent process"]
+        direction TB
+        n1["LLM-written code"] --> n2["agent process"]
+        n2 --- n3[".env / API keys"]
+        n2 --- n4["all your files"]
+        n2 --- n5["internet + Postgres"]
+    end
+    subgraph prod["Production: a sandbox per run"]
+        direction TB
+        p1["LLM-written code"] --> p2["throwaway container<br/>no network, no secrets,<br/>CPU/RAM/time limits"]
+        p2 --- p3["only the input file<br/>(read-only)"]
+        p2 --> p4["output file +<br/>stdout/stderr"]
+    end
+    now ~~~ prod
+```
 
 **How to do it in production: run the code in a sandbox, not on the server.**
 
@@ -538,6 +700,12 @@ Production checklist:
 | `ImportError` for `sql_analyst` from `data_agent.py` | the graph was compiled only inside `if __name__ == "__main__":` | compile at module level | code under `__main__` doesn't run on import. |
 | SQL sub-graph rejected its input | `sql_node` used field names that don't exist (`user_question`, `curated_ques`) | use `user_input`, `curated_question` | the input dict must match the sub-graph's state model exactly. |
 | LangChain warning about `reasoning_effort` | it was passed inside `model_kwargs` | pass it as a direct argument | read warnings; they often point to an API that changed. |
+| Generated code starting with `pd.` or `open(` would break (`d.read_csv`) | `lstrip('python')` removes any of the *characters* p, y, t, h, o, n, not the word | `removeprefix("```python")` | `strip`/`lstrip` take a set of characters; use `removeprefix`/`removesuffix` for text. |
+| The agent said "transformed and saved" even when the pandas code crashed | the tool's message always started with the success text | return a clear "FAILED, nothing was saved" message | the LLM believes what tools tell it; tool messages must be honest. |
+| A different API crashed the whole graph with `KeyError: 'results'` | only network errors were caught | handle lists/objects without `"results"`, catch other errors as text | catch the errors you can predict, and return them as text. |
+| Output landed in the wrong folder when run from elsewhere | the generated code used paths relative to the current folder | `ETLTools.resolve_path` turns them into full paths from the project root | relative paths depend on *where you run*, not where the file is. |
+| A **folder** named `result.json` appeared | the LLM passed a file path as `output_folder`, and the code created it as a folder | if the path has an extension, create its parent folder | LLM arguments are guesses; check them before acting on them. |
+| A DB connection failure showed a confusing `NameError`/`AttributeError` | `cursor` was used in `finally` before it existed | check the connection first, start `cursor = None` | in `try/finally`, every name used in `finally` must exist on every path. |
 
 ---
 
@@ -549,12 +717,10 @@ Production checklist:
 - The whole schema (+ sample rows) is sent on every question. Fine for 5 tables, too big for 500.
 - The LLM judge is the only safety layer; there's no read-only DB user yet.
 - `ETLTools.execute_code` runs LLM code with `exec` inside the agent process: OK locally, not safe in production (see [note 13](#13-running-llm-generated-code-execute_code-and-production)).
-- `extract_load` assumes the API puts its rows under `"results"`, which fits PokéAPI but not most other APIs.
 - The ETL loop has no maximum number of turns besides LangGraph's default recursion limit.
 - No retry: if the SQL fails, the agent explains the error but doesn't try to fix it.
 - Each run starts from scratch: there's no memory between requests.
 - A new DB connection is opened for every call, and `DatabaseUtil` closes it after one method call.
-- If the DB connection fails, `execute_query` / `schema_details` raise an error in `finally` that hides the real one.
 - `OPENAI_MODEL` in `.env` isn't used.
 
 **Ideas**
