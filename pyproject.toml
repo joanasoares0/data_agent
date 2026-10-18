@@ -1,7 +1,7 @@
 [project]
 name = "data-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Multi-agent data assistant (LangGraph): a router sends plain-English requests to a SQL analyst (Postgres) or an ETL analyst (APIs and files)."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,5 +12,7 @@ dependencies = [
     "langgraph>=1.2.12",
     "pandas>=3.0.6",
     "psycopg2-binary>=2.9.13",
+    "pyarrow>=26.0.0",
     "pydantic>=2.13.5",
+    "requests>=2.34.2",
 ]

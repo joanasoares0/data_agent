@@ -52,7 +52,8 @@ from models.schema import ETLAgentSchema     # graph state: just the message his
 #   HumanMessage -> what the user said
 #   AIMessage    -> what the LLM said (may contain tool_calls)
 #   ToolMessage  -> the result of running a tool, linked to the call by tool_call_id
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+#   SystemMessage -> instructions for the LLM (its role and rules), sent first
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 # @tool turns a normal Python function into a LangChain "tool": an object with a
 # name, a description (the docstring) and an argument schema (the type hints).
@@ -175,8 +176,8 @@ def transform_load_tool(
     )
 
     # Step 4: run the generated code. It reads the input file and writes the output file.
-    # ⚠ exec() runs LLM-written code with full access to this machine.
-    #   Fine for learning locally, never in production (see README).
+    # It runs in a separate Python process WITHOUT our secrets (see execute_code
+    # in utils/etl_tools.py). Safer than exec(), but still not a full sandbox.
     # Execute the Pandas code
     results = etl_tools.execute_code(pandas_code)
 
@@ -221,18 +222,24 @@ def llm_node(state:ETLAgentSchema):
 
     messages = state.messages
 
-    # The chat history (user request + earlier tool calls + tool results) is
-    # pasted into the prompt, so on the second turn the LLM sees "the tool
-    # succeeded" and knows it can stop.
-    prompt = f"""
-            You are a Python Data Analyst who has access to tools that can extract and load, 
-            transform and load data. You will be provided with a user's question 
-            and you would need to perform the right ETL operations as per the user's question. 
-            If the operation is performed then inform the user and end the coversation.
-            Here's the chat history: {messages}\n
-    """
+    # The instructions go in a SystemMessage, and the history is sent as a real
+    # LIST of messages: [system, human, AI(tool_calls), tool result, ...].
+    #
+    # Before, the history was pasted into one big text with f"{messages}", so the
+    # LLM read Python object text like "AIMessage(content=..., tool_calls=...)".
+    # It never saw proper tool-call/tool-result turns, so it could call the same
+    # tool again and again, and the prompt grew bigger on every loop.
+    # As a real list, the model sees "I asked for this tool -> here's the result"
+    # in the format it was trained on, and knows when to stop.
+    system_prompt = SystemMessage(content="""
+            You are a Python Data Analyst who has access to tools that can extract and load,
+            transform and load data. You will be provided with a user's question
+            and you would need to perform the right ETL operations as per the user's question.
+            If the operation is performed then inform the user and end the conversation.
+            If a tool reports a failure, tell the user what went wrong instead of claiming success.
+    """)
 
-    final_answer = llm_bind.invoke(prompt)
+    final_answer = llm_bind.invoke([system_prompt, *messages])
 
     # Return only the new message: the `add` reducer appends it to the history
     return {"messages": [final_answer]}
@@ -257,9 +264,16 @@ def tool_node(state:ETLAgentSchema):
     # The LLM can ask for several calls at once, so run each one.
     for tool_call in tool_calls:
 
-        tool = tools_by_name[tool_call['name']]
-        # tool_call['args'] is a dict like {"url": "...", "output_folder": "...", "format": "csv"}
-        observation = tool.invoke(tool_call['args'])
+        # try/except: if a tool crashes (file not found, no permission to create
+        # a folder, unknown tool name, wrong arguments...), the error becomes a
+        # ToolMessage the LLM can read and explain, instead of a traceback that
+        # stops the whole graph (and the Data Agent with it).
+        try:
+            tool = tools_by_name[tool_call['name']]
+            # tool_call['args'] is a dict like {"url": "...", "output_folder": "...", "format": "csv"}
+            observation = tool.invoke(tool_call['args'])
+        except Exception as e:
+            observation = f"Failed to run tool {tool_call['name']}: {e}"
 
         # Wrap the result in a ToolMessage. tool_call_id links it to the request,
         # which the OpenAI API requires (every tool call needs a matching result).

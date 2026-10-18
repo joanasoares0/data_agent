@@ -59,6 +59,18 @@ class DatabaseUtil:
         # and keep connection = None instead of crashing at import time.
         try:
             self.connection = psycopg2.connect(**db_config)  # ** unpacks the dict into keyword arguments
+
+            # SECURITY: make the whole session READ-ONLY.
+            # The SQL we run is written by an LLM, and the only other check is an
+            # LLM judge, which can make mistakes or be tricked. psycopg2 runs every
+            # statement in a string, so "SELECT 1; DROP TABLE rideshare.users; COMMIT;"
+            # would otherwise delete the table for good.
+            # With readonly=True, Postgres itself refuses any write (INSERT, UPDATE,
+            # DELETE, DROP, CREATE...) with "cannot execute ... in a read-only
+            # transaction". This rule can't be talked out of, unlike the LLM judge.
+            # (DatabaseUtil only reads: describing the schema and running SELECTs.
+            # feed_db.py, which loads the data, uses its own normal connection.)
+            self.connection.set_session(readonly=True)
         except Exception as e:
             print(f"Error connecting to database: {e}")
             self.connection = None

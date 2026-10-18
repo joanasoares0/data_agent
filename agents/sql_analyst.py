@@ -108,8 +108,9 @@ def curate_question(state: AgentSchema) -> dict:
     user_question = state.user_input # state is a Pydantic object, so fields are read with dot notation
     llm = pick_llm("low") #pick a low cost llm for this task, as it is not critical to have a high quality answer for this task.
 
-    # .invoke() returns an AIMessage; .content is its text.
-    response = llm.invoke(f"Curate the following question: {user_question}").content
+    # .invoke() returns an AIMessage; .text is its reply as one string.
+    # (.content can be a LIST of blocks with some models; .text is always a str.)
+    response = llm.invoke(f"Curate the following question: {user_question}").text
 
     # the add reducer appends this new message to the conversation history
     return {"curated_question": response, "messages": [HumanMessage(content=response)]}
@@ -199,7 +200,22 @@ def generate_sql(state: AgentSchema) -> dict:
     prompt = state.prompt_query_context
 
     llm = pick_llm("medium") #pick a medium cost llm for this task, as it is critical to have a high quality answer for this task.
-    generated_sql_query = llm.invoke(prompt).content
+    generated_sql_query = llm.invoke(prompt).text
+
+    # Even when told "only SQL", models often wrap the query in a Markdown block:
+    #   ```sql
+    #   SELECT ...
+    #   ```
+    # Postgres can't run the backticks ("syntax error at or near `"), so remove
+    # that exact text from the start and end. (removeprefix removes the text
+    # "```sql", unlike lstrip, which would remove any of those characters.)
+    generated_sql_query = (
+        generated_sql_query.strip()
+        .removeprefix("```sql")
+        .removeprefix("```")
+        .removesuffix("```")
+        .strip()
+    )
 
     return {"generated_sql_query": generated_sql_query}
 
@@ -332,7 +348,7 @@ def represent_final_answer(state: AgentSchema) -> dict:
         {curated_question}
         """
 
-    llm_response = llm.invoke(prompt).content
+    llm_response = llm.invoke(prompt).text
 
     return {"final_answer": llm_response, "messages": [AIMessage(content=llm_response)]}
 
